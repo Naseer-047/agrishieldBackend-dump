@@ -67,7 +67,7 @@ async def register_user(req: UserRegistration):
             return JSONResponse(status_code=500, content={"status": "error", "message": "DB not connected"})
     except Exception as e:
         print(f"Error saving user to MongoDB: {e}")
-        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+        return JSONResponse(status_code=500, content={"status": "error", "message": "Unable to register user"})
 
 @app.get("/", response_class=HTMLResponse)
 def home():
