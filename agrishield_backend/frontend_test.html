@@ -36,7 +36,96 @@
         <p>🌧️ Rain: <span id="rain"></span> mm</p>
     </div>
     </div>
+    <div class="card">
+        <h2>2. Safe Harvest Estimator (with Weather)</h2>
+        <div style="display: flex; flex-direction: column; gap: 10px; max-width: 300px; margin-bottom: 15px;">
+            <label>Crop: <input type="text" id="crop" placeholder="e.g., Tomato" value="Tomato"></label>
+            <label>Pesticide: <input type="text" id="pesticide" placeholder="e.g., Lambda cyhalothrin" value="Lambda cyhalothrin"></label>
+            <label>Spray Date: <input type="date" id="sprayDate"></label>
+        </div>
 
+        <button onclick="checkMRLRisk()">Calculate Risk & Fetch Weather</button>
+
+        <div id="mrlResults" style="display: none; margin-top: 20px; padding: 15px; border-radius: 6px; background: #f8fafc;">
+            <h3>Status: <span id="mrlStatus" style="font-weight: bold;"></span></h3>
+            <p>⏳ Safe Harvest In: <strong id="countdown"></strong> days</p>
+            <p>🧪 Estimated Residue: <span id="residue"></span> mg/kg (Limit: <span id="limit"></span>)</p>
+            <p>🌤️ Weather Impact: <em id="weatherNote"></em></p>
+        </div>
+    </div>
+
+    <script>
+        // Set today's date as default for the spray date input to save time testing
+        document.getElementById('sprayDate').valueAsDate = new Date();
+
+        function checkMRLRisk() {
+            const crop = document.getElementById('crop').value;
+            const pesticide = document.getElementById('pesticide').value;
+            const sprayDate = document.getElementById('sprayDate').value;
+
+            if (!crop || !pesticide || !sprayDate) {
+                alert("Please fill in crop, pesticide, and spray date.");
+                return;
+            }
+
+            // Define the core payload
+            const payload = {
+                crop: crop,
+                pesticide: pesticide,
+                spray_date: sprayDate
+            };
+
+            // Attempt to get location for weather integration
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        payload.latitude = position.coords.latitude;
+                        payload.longitude = position.coords.longitude;
+                        sendMRLRequest(payload);
+                    },
+                    (error) => {
+                        console.warn("Location denied or failed. Proceeding without weather data.");
+                        sendMRLRequest(payload);
+                    }
+                );
+            } else {
+                sendMRLRequest(payload);
+            }
+        }
+
+        async function sendMRLRequest(payload) {
+            try {
+                const response = await fetch('http://127.0.0.1:8000/mrl-risk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+
+                if (data.status === "ERROR" || data.status === "HOLD") {
+                    alert("Issue: " + data.explanation);
+                    return;
+                }
+
+                // Update UI with results
+                const statusSpan = document.getElementById('mrlStatus');
+                statusSpan.innerText = data.status;
+                statusSpan.style.color = data.status === "SAFE" ? "green" : "orange";
+
+                document.getElementById('countdown').innerText = data.safe_harvest_countdown_days;
+                document.getElementById('residue').innerText = data.estimated_residue_mg_kg;
+                document.getElementById('limit').innerText = data.mrl_limit;
+                document.getElementById('weatherNote').innerText = data.weather_adjustment;
+
+                document.getElementById('mrlResults').style.display = 'block';
+            } catch (error) {
+                console.error("Connection failed:", error);
+                alert("Failed to connect to the backend.");
+            }
+        }
+    </script>
+    
     <script>
         function fetchWeather() {
     if (!navigator.geolocation) {
@@ -102,6 +191,74 @@
             } catch (error) {
                 console.error("Error:", error);
                 alert("Failed to connect to the backend. Is PyCharm running?");
+            }
+        }
+        document.getElementById('sprayDate').valueAsDate = new Date();
+
+        function checkMRLRisk() {
+            const crop = document.getElementById('crop').value;
+            const pesticide = document.getElementById('pesticide').value;
+            const sprayDate = document.getElementById('sprayDate').value;
+
+            if (!crop || !pesticide || !sprayDate) {
+                alert("Please fill in crop, pesticide, and spray date.");
+                return;
+            }
+
+            // Define the core payload
+            const payload = {
+                crop: crop,
+                pesticide: pesticide,
+                spray_date: sprayDate
+            };
+
+            // Attempt to get location for weather integration
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        payload.latitude = position.coords.latitude;
+                        payload.longitude = position.coords.longitude;
+                        sendMRLRequest(payload);
+                    },
+                    (error) => {
+                        console.warn("Location denied or failed. Proceeding without weather data.");
+                        sendMRLRequest(payload);
+                    }
+                );
+            } else {
+                sendMRLRequest(payload);
+            }
+        }
+
+        async function sendMRLRequest(payload) {
+            try {
+                const response = await fetch('http://127.0.0.1:8000/mrl-risk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+
+                if (data.status === "ERROR" || data.status === "HOLD") {
+                    alert("Issue: " + data.explanation);
+                    return;
+                }
+
+                // Update UI with results
+                const statusSpan = document.getElementById('mrlStatus');
+                statusSpan.innerText = data.status;
+                statusSpan.style.color = data.status === "SAFE" ? "green" : "orange";
+
+                document.getElementById('countdown').innerText = data.safe_harvest_countdown_days;
+                document.getElementById('residue').innerText = data.estimated_residue_mg_kg;
+                document.getElementById('limit').innerText = data.mrl_limit;
+                document.getElementById('weatherNote').innerText = data.weather_adjustment;
+
+                document.getElementById('mrlResults').style.display = 'block';
+            } catch (error) {
+                console.error("Connection failed:", error);
+                alert("Failed to connect to the backend.");
             }
         }
 
