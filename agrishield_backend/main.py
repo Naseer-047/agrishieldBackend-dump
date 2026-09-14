@@ -77,6 +77,8 @@ class ApplicationEvent(BaseModel):
     pesticide: str
     spray_date: str
     destination: Optional[str] = "Domestic"
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 
 @app.post("/diagnose")
@@ -101,7 +103,6 @@ async def diagnose(file: UploadFile = File(...)):
 
 @app.post("/mrl-risk")
 def mrl_risk(event: ApplicationEvent):
-    # 1. Look up the limits automatically so the farmer doesn't have to
     mrl_data = find_mrl(event.crop, event.pesticide)
     if not mrl_data:
         return {"status": "HOLD", "explanation": "Missing MRL data for this crop/pesticide."}
@@ -110,20 +111,39 @@ def mrl_risk(event: ApplicationEvent):
     dt50 = mrl_data["half_life_days"]
     c0 = 2.5  # Label default baseline
 
-    # 2. Calculate days elapsed
     d_spray = datetime.strptime(event.spray_date, "%Y-%m-%d")
     days_elapsed = (datetime.now() - d_spray).days
     if days_elapsed < 0:
         return {"status": "ERROR", "explanation": "Spray date cannot be in the future."}
 
-    # 3. Use your teammate's math engine
-    estimated_residue = calculate_residue(c0, dt50, days_elapsed)
-    safe_harvest_days = calculate_safe_harvest_time(c0, dt50, mrl_limit)
+    # Weather Integration: Rain Wash-off calculation
+    weather_modifier = 1.0
+    weather_note = "No location provided; using standard decay."
+
+    if event.latitude and event.longitude:
+        try:
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={event.latitude}&longitude={event.longitude}&current=precipitation&timezone=auto"
+            resp = requests.get(url, timeout=3).json()
+            rain_mm = resp.get("current", {}).get("precipitation", 0)
+
+            if rain_mm > 0:
+                # Hackathon logic: 15% residue wash-off per mm of rain (capped at 50% reduction)
+                wash_off = min(0.50, rain_mm * 0.15)
+                weather_modifier = 1.0 - wash_off
+                weather_note = f"Rainfall detected ({rain_mm}mm). Applied {int(wash_off * 100)}% wash-off reduction."
+            else:
+                weather_note = "Clear weather detected at location. Standard decay applied."
+        except Exception:
+            weather_note = "Weather API timeout; using standard decay."
+
+    # Apply math with the new weather modifier
+    effective_c0 = c0 * weather_modifier
+    estimated_residue = calculate_residue(effective_c0, dt50, days_elapsed)
+    safe_harvest_days = calculate_safe_harvest_time(effective_c0, dt50, mrl_limit)
 
     safe = estimated_residue <= mrl_limit
     status = "SAFE" if safe else "WAIT"
 
-    # 4. Use your teammate's database logger
     timestamp = datetime.now().isoformat()
     log_mrl(
         event.pesticide,
@@ -140,9 +160,9 @@ def mrl_risk(event: ApplicationEvent):
         "mrl_limit": mrl_limit,
         "days_after_application": days_elapsed,
         "safe_harvest_countdown_days": max(0, round(safe_harvest_days - days_elapsed, 1)),
+        "weather_adjustment": weather_note,
         "explanation": "Based on published degradation data; not a certified laboratory measurement."
     }
-
 class MRLCheckRequest(BaseModel):
     crop: str
     pesticide: str
