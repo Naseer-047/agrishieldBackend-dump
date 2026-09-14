@@ -1,6 +1,9 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
+from datetime import datetime, timedelta
+from fastapi.responses import JSONResponse, HTMLResponse
+from pydantic import BaseModel
 from PIL import Image
 import io
 
@@ -36,6 +39,35 @@ async def startup_db_client():
 async def shutdown_db_client():
     app.mongodb_client.close()
     print("Closed MongoDB connection.")
+
+# --- Onboarding Endpoint ---
+from typing import Optional
+
+class UserRegistration(BaseModel):
+    language: str
+    name: str
+    mobile_number: Optional[str] = None
+    password: Optional[str] = None
+    farm_location: str
+    farm_size_acres: float
+    crop: str
+
+@app.post("/users/onboard")
+async def register_user(req: UserRegistration):
+    try:
+        if hasattr(app, "database"):
+            users_collection = app.database.get_collection("users")
+            user_doc = req.dict()
+            user_doc["created_at"] = datetime.now().isoformat()
+            
+            # Simple password storing for hackathon prototype (In real app, MUST hash password)
+            await users_collection.insert_one(user_doc)
+            return {"status": "success", "message": "User registered successfully"}
+        else:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "DB not connected"})
+    except Exception as e:
+        print(f"Error saving user to MongoDB: {e}")
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -132,8 +164,6 @@ async def diagnose(file: UploadFile = File(...)):
     return JSONResponse(response_data)
 
 from pydantic import BaseModel
-from datetime import datetime, timedelta
-
 class MRLRequest(BaseModel):
     crop: str
     pesticide: str
