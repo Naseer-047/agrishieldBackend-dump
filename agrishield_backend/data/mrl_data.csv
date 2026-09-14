@@ -1,0 +1,18 @@
+crop,pesticide,mrl_mg_per_kg,half_life_days,source
+Tomato,Lambda cyhalothrin,0.1,10,FSSAI Version IX 03-02-2026
+Chilli,Lambda cyhalothrin,0.05,20,FSSAI Version IX 03-02-2026
+Grapes,Lambda cyhalothrin,0.05,20,FSSAI Version IX 03-02-2026
+Mango,Lambda cyhalothrin,0.2,10,FSSAI Version IX 03-02-2026
+Rice,Lambda cyhalothrin,1.0,20,FSSAI Version IX 03-02-2026
+Chilli,Abamectin,0.05,3,FSSAI Version IX 03-02-2026
+Grapes,Abamectin,0.05,4,FSSAI Version IX 03-02-2026
+Dry Chilli,Abamectin,0.5,3,FSSAI Version IX 03-02-2026
+Grapes,Fluxapyroxad,3.0,11,FSSAI Version IX 03-02-2026
+Apple,Fluxapyroxad,0.9,15,FSSAI Version IX 03-02-2026
+Rice,Fluxapyroxad,5.0,18,FSSAI Version IX 03-02-2026
+Tomato,Chlorantraniliprole,0.6,3,FSSAI Data Portal
+Onion,Mancozeb,4.0,3,FSSAI Version IX 03-02-2026
+Potato,Chlorpyrifos,2.0,5,FSSAI Version IX 03-02-2026
+Banana,Carbendazim,1.0,6,FSSAI Version IX 03-02-2026
+Wheat,Tebuconazole,0.15,3,FSSAI Version IX 03-02-2026
+Brinjal,Lambda cyhalothrin,0.2,2,FSSAI Version IX 03-02-2026
