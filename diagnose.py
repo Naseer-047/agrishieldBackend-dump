@@ -7,7 +7,7 @@ import io
 import base64
 import numpy as np
 
-from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam import GradCAMPlusPlus
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from pytorch_grad_cam.utils.image import show_cam_on_image
 
@@ -48,8 +48,8 @@ def generate_heatmap(image: Image.Image, predicted_class_idx: int):
     input_tensor = transform(image.convert("RGB")).unsqueeze(0).to(device)
     rgb_img = np.array(image.resize((224, 224)).convert("RGB")) / 255.0
     
-    target_layers = [model.features[-1]]
-    cam = GradCAM(model=model, target_layers=target_layers)
+    target_layers = [model.features[-2]]
+    cam = GradCAMPlusPlus(model=model, target_layers=target_layers)
     targets = [ClassifierOutputTarget(predicted_class_idx)]
     
     grayscale_cam = cam(input_tensor=input_tensor, targets=targets)[0]
