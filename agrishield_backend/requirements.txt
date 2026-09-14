@@ -7,4 +7,5 @@ numpy
 python-multipart
 grad-cam
 motor
-dnspythongoogle-generativeai
+dnspython
+google-generativeai

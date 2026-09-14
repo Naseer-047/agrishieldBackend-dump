@@ -57,6 +57,12 @@ async def register_user(req: UserRegistration):
     try:
         if hasattr(app, "database"):
             users_collection = app.database.get_collection("users")
+            
+            # Check if user already exists
+            existing_user = await users_collection.find_one({"mobile": req.mobile})
+            if existing_user:
+                return JSONResponse(status_code=400, content={"status": "error", "message": "User with this mobile number already exists."})
+
             user_doc = req.dict()
             user_doc["created_at"] = datetime.now().isoformat()
             
@@ -67,7 +73,7 @@ async def register_user(req: UserRegistration):
             return JSONResponse(status_code=500, content={"status": "error", "message": "DB not connected"})
     except Exception as e:
         print(f"Error saving user to MongoDB: {e}")
-        return JSONResponse(status_code=500, content={"status": "error", "message": "Unable to register user"})
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
 @app.get("/", response_class=HTMLResponse)
 def home():
