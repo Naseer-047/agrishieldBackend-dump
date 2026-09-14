@@ -1,16 +1,158 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse, HTMLResponse
+from pydantic import BaseModel
+from datetime import datetime, timedelta
+from fastapi.responses import JSONResponse, HTMLResponse
+from pydantic import BaseModel
 from PIL import Image
 import io
-import hashlib
-from datetime import datetime
-from database import create_tables, log_diagnosis,log_mrl
-from mrl_engine import calculate_residue, calculate_safe_harvest_time
 
 from diagnose import predict, generate_heatmap
-from drone.drone_analyze import analyze_drone_image
-app = FastAPI(title="Plant Disease Diagnose")
-create_tables()
+# from mrl.mrl_assessment import assess_crop_safety
+
+app = FastAPI(title="AgriShield Backend")
+from fastapi.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+import os
+
+# Add this block to allow frontend connections
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins (perfect for hackathon dev)
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (POST, GET, etc.)
+    allow_headers=["*"],  # Allows all headers
+)
+
+# --- MongoDB Integration ---
+# Provide default connection string if not found in env
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://g486822_db_user:Naseer@cluster0.x8v75pd.mongodb.net/")
+
+@app.on_event("startup")
+async def startup_db_client():
+    print(f"Connecting to MongoDB...")
+    app.mongodb_client = AsyncIOMotorClient(MONGO_URI)
+    app.database = app.mongodb_client.get_database("agrishield_db")
+    print("Connected to MongoDB!")
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    app.mongodb_client.close()
+    print("Closed MongoDB connection.")
+
+# --- Onboarding Endpoint ---
+from typing import Optional
+
+class UserRegistration(BaseModel):
+    language: str
+    name: str
+    mobile_number: str
+    password: Optional[str] = None
+    farm_location: str
+    farm_size_acres: float
+    crop: str
+
+@app.get("/users/check")
+async def check_user_exists(mobile: str):
+    if hasattr(app, "database"):
+        users_collection = app.database.get_collection("users")
+        existing_user = await users_collection.find_one({"mobile_number": mobile})
+        if existing_user:
+            return {"exists": True}
+    return {"exists": False}
+
+class UserLogin(BaseModel):
+    mobile_number: str
+    password: str
+
+@app.post("/users/login")
+async def login_user(req: UserLogin):
+    try:
+        if hasattr(app, "database"):
+            users_collection = app.database.get_collection("users")
+            user = await users_collection.find_one({"mobile_number": req.mobile_number})
+            if not user:
+                return JSONResponse(status_code=404, content={"status": "error", "message": "Account not found."})
+            
+            if user.get("password") != req.password:
+                return JSONResponse(status_code=401, content={"status": "error", "message": "Incorrect password."})
+            
+            # Remove MongoDB _id before returning
+            user.pop("_id", None)
+            return {"status": "success", "message": "Login successful", "user": user}
+        else:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "DB not connected"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+
+@app.post("/users/onboard")
+async def register_user(req: UserRegistration):
+    try:
+        if hasattr(app, "database"):
+            users_collection = app.database.get_collection("users")
+            
+            # Check if user already exists
+            existing_user = await users_collection.find_one({"mobile_number": req.mobile_number})
+            if existing_user:
+                return JSONResponse(status_code=400, content={"status": "error", "message": "User with this mobile number already exists."})
+
+            user_doc = req.dict()
+            user_doc["created_at"] = datetime.now().isoformat()
+            
+            # Simple password storing for hackathon prototype (In real app, MUST hash password)
+            await users_collection.insert_one(user_doc)
+            return {"status": "success", "message": "User registered successfully"}
+        else:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "DB not connected"})
+    except Exception as e:
+        print(f"Error saving user to MongoDB: {e}")
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+
+@app.get("/users/{mobile_number}")
+async def get_user(mobile_number: str):
+    try:
+        if hasattr(app, "database"):
+            users_collection = app.database.get_collection("users")
+            user = await users_collection.find_one({"mobile_number": mobile_number})
+            if not user:
+                return JSONResponse(status_code=404, content={"status": "error", "message": "User not found."})
+            
+            user.pop("_id", None)
+            return {"status": "success", "user": user}
+        else:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "DB not connected"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+
+class UserUpdate(BaseModel):
+    mobile_number: str
+    name: Optional[str] = None
+    language: Optional[str] = None
+    about: Optional[str] = None
+    email: Optional[str] = None
+
+@app.put("/users/update")
+async def update_user(req: UserUpdate):
+    try:
+        if hasattr(app, "database"):
+            users_collection = app.database.get_collection("users")
+            user = await users_collection.find_one({"mobile_number": req.mobile_number})
+            if not user:
+                return JSONResponse(status_code=404, content={"status": "error", "message": "User not found."})
+            
+            update_data = {k: v for k, v in req.dict().items() if v is not None and k != "mobile_number"}
+            
+            if update_data:
+                await users_collection.update_one(
+                    {"mobile_number": req.mobile_number},
+                    {"$set": update_data}
+                )
+            
+            return {"status": "success", "message": "Profile updated successfully"}
+        else:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "DB not connected"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -21,83 +163,305 @@ def home():
         </head>
         <body style="font-family: Arial; text-align: center; padding: 80px;">
             <h1>🌱 AgriShield</h1>
-            <h2>Plant Disease Diagnosis</h2>
+            <h2>Plant Disease Diagnosis + MRL Safety Check</h2>
             <p>✅ Backend is running successfully</p>
-            <p>MobileNetV2 + Grad-CAM</p>
+            <p>MobileNetV2 + Grad-CAM &nbsp;|&nbsp; MRL/PHI Assessment Engine</p>
             <br>
             <a href="/docs">Open API Testing</a>
         </body>
     </html>
     """
 
+# Define the expected JSON payload shape
+class MRLRequest(BaseModel):
+    crop: str
+    pesticide: str
+    initial_residue: float = 2.0
+    spray_date: str
+    destination: Optional[str] = "Domestic"
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    mobile_number: Optional[str] = None
+
+import google.generativeai as genai
+import os
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+vision_model = genai.GenerativeModel('gemini-1.5-flash')
 
 @app.post("/diagnose")
-async def diagnose(file: UploadFile = File(...)):
+async def diagnose(file: UploadFile = File(...), mobile_number: str = Form(None)):
     contents = await file.read()
-    image_hash = hashlib.sha256(contents).hexdigest()
-    timestamp = datetime.now().isoformat()
     image = Image.open(io.BytesIO(contents)).convert("RGB")
 
-    label, confidence, class_idx, top_predictions = predict(image)
-    log_diagnosis(
-    image_hash,
-    label,
-    float(confidence),
-    timestamp
-)
-    heatmap_b64 = generate_heatmap(image, class_idx)
+    if not GEMINI_API_KEY:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "config_error", "message": "GEMINI_API_KEY is not configured on the server. Please add it to your environment variables."}
+        )
 
-    return JSONResponse({
-        "disease": label.replace("___", " - ").replace("_", " "),
-        "confidence_percent": round(confidence * 100, 2),
-        "top_predictions": top_predictions,
-        "heatmap_base64": heatmap_b64
-    })
-@app.post("/mrl-check")
-async def mrl_check(
-    pesticide: str,
-    application_date: str,
-    harvest_date: str,
-    c0: float,
-    dt50: float,
-    mrl: float,
-    days: float
-):
-    estimated_residue = calculate_residue(c0, dt50, days)
+    try:
+        # Resize image for Gemini to make it fast
+        gemini_image = image.copy()
+        gemini_image.thumbnail((512, 512))
+        
+        prompt = """
+        You are an expert agricultural plant pathologist. Analyze this leaf image and identify the crop and any disease present.
+        If it's healthy, indicate that.
+        Return your analysis STRICTLY as a raw JSON object with no markdown formatting or backticks. Example:
+        {
+          "is_plant": true,
+          "disease": "Potato - Early Blight",
+          "confidence_percent": 95,
+          "top_predictions": [
+            {"disease": "Potato - Early Blight", "confidence_percent": 95},
+            {"disease": "Potato - Late Blight", "confidence_percent": 5}
+          ]
+        }
+        If the image is not a plant, crop, or leaf, set "is_plant" to false. Do NOT wrap the output in ```json ... ``` blocks.
+        """
+        import json
+        response = vision_model.generate_content([prompt, gemini_image])
+        result_text = response.text.strip()
+        
+        if result_text.startswith("```json"):
+            result_text = result_text.replace("```json", "").replace("```", "").strip()
+        elif result_text.startswith("```"):
+            result_text = result_text.replace("```", "").strip()
+            
+        ai_data = json.loads(result_text)
+        
+        if not ai_data.get("is_plant", True):
+            return JSONResponse(
+                status_code=400, 
+                content={"error": "not_a_leaf", "message": "Not a plant or leaf."}
+            )
+            
+        response_data = {
+            "disease": ai_data.get("disease", "Unknown"),
+            "confidence_percent": ai_data.get("confidence_percent", 90),
+            "top_predictions": ai_data.get("top_predictions", []),
+            "heatmap_base64": None
+        }
 
-    safe_harvest_days = calculate_safe_harvest_time(
-        c0, dt50, mrl
-    )
+    except Exception as e:
+        print("Gemini Error:", e)
+        # 2. Fallback to local PyTorch Model if Gemini fails (e.g. Rate Limit)
+        label, confidence, class_idx, top_predictions = predict(image)
+        response_data = {
+            "disease": label.replace("___", " - ").replace("_", " "),
+            "confidence_percent": round(confidence * 100, 2),
+            "top_predictions": top_predictions,
+            "heatmap_base64": None
+        }
 
-    safe = estimated_residue <= mrl
+    # Save to MongoDB
+    try:
+        if hasattr(app, "database"):
+            disease_collection = app.database.get_collection("disease_reports")
+            # Don't save the huge heatmap to the DB for space reasons
+            db_record = response_data.copy()
+            db_record["heatmap_base64"] = None
+            db_record["created_at"] = datetime.now().isoformat()
+            if mobile_number:
+                db_record["mobile_number"] = mobile_number
+            await disease_collection.insert_one(db_record)
+    except Exception as e:
+        print(f"Error saving to MongoDB: {e}")
 
-    timestamp = datetime.now().isoformat()
+    return JSONResponse(response_data)
 
-    log_mrl(
-        pesticide,
-        application_date,
-        harvest_date,
-        estimated_residue,
-        safe,
-        timestamp
-    )
+from drone.drone_analyze import analyze_drone_image
 
-    return {
-        "initial_residue_mg_kg": c0,
-        "estimated_residue_mg_kg": round(estimated_residue, 3),
-        "mrl_mg_kg": mrl,
-        "days_after_application": days,
-        "safe": safe,
-        "estimated_safe_harvest_days": round(safe_harvest_days, 2),
-        "estimated_note": "Based on published degradation data; not a certified laboratory measurement."
-    }
 @app.post("/drone-analyze")
 async def drone_analyze(file: UploadFile = File(...)):
-
     contents = await file.read()
-
     image = Image.open(io.BytesIO(contents)).convert("RGB")
-
     result = analyze_drone_image(image)
-
     return result
+
+from mrl.mrl_assessment import assess_crop_safety
+import math
+import requests
+
+@app.post("/mrl-risk")
+async def check_mrl_risk(req: MRLRequest):
+    # 1. Parse dates to YYYY-MM-DD
+    try:
+        spray_date = datetime.strptime(req.spray_date, "%d %b %Y").strftime("%Y-%m-%d")
+    except ValueError:
+        try:
+            spray_date = datetime.strptime(req.spray_date, "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError:
+            spray_date = datetime.now().strftime("%Y-%m-%d") # Fallback
+
+    d_spray = datetime.strptime(spray_date, "%Y-%m-%d")
+    days_elapsed = (datetime.now() - d_spray).days
+    if days_elapsed < 0:
+        return {"status": "ERROR", "explanation": "Spray date cannot be in the future."}
+
+    # 2. Assume a default initial residue since farmer shouldn't enter this
+    default_initial_residue = req.initial_residue
+    
+    # Check if unknown pesticide
+    if req.pesticide == "Unknown" or not req.pesticide:
+        return {
+            "status": "HOLD",
+            "risk_level": "unknown",
+            "estimated_residue_risk": 0.0,
+            "mrl_limit": 0.0,
+            "safe_harvest_date": "Unknown",
+            "phi_remaining_days": 0,
+            "confidence": 0.0,
+            "weather_adjustment": "No pesticide provided.",
+            "explanation": "AgriShield could not verify the required pesticide/MRL information."
+        }
+
+    # 3. Call Pavan's real logic to get base assessment
+    assessment = assess_crop_safety(
+        crop=req.crop,
+        pesticide=req.pesticide,
+        initial_residue=default_initial_residue,
+        spray_date=spray_date
+    )
+
+    if assessment.get("status") in ["UNKNOWN", "ERROR"]:
+        return {
+            "status": "HOLD",
+            "risk_level": "unknown",
+            "estimated_residue_risk": 0.0,
+            "mrl_limit": 0.0,
+            "safe_harvest_date": "Unknown",
+            "phi_remaining_days": 0,
+            "confidence": 0.0,
+            "weather_adjustment": "Error in assessment.",
+            "explanation": assessment.get("message", "AgriShield could not verify the required pesticide/MRL information.")
+        }
+
+    # Weather Integration: Rain Wash-off calculation
+    weather_modifier = 1.0
+    weather_note = "No location provided; using standard decay."
+
+    if req.latitude and req.longitude:
+        try:
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={req.latitude}&longitude={req.longitude}&current=precipitation&timezone=auto"
+            resp = requests.get(url, timeout=3).json()
+            rain_mm = resp.get("current", {}).get("precipitation", 0)
+
+            if rain_mm > 0:
+                # Hackathon logic: 15% residue wash-off per mm of rain (capped at 50% reduction)
+                wash_off = min(0.50, rain_mm * 0.15)
+                weather_modifier = 1.0 - wash_off
+                weather_note = f"Rainfall detected ({rain_mm}mm). Applied {int(wash_off * 100)}% wash-off reduction."
+            else:
+                weather_note = "Clear weather detected at location. Standard decay applied."
+        except Exception:
+            weather_note = "Weather API timeout; using standard decay."
+
+    # Adjust predicted residue based on weather
+    adjusted_residue = assessment["predicted_residue_mg_per_kg"] * weather_modifier
+    mrl = assessment["mrl_mg_per_kg"]
+    
+    # 4. Map statuses to UI
+    if adjusted_residue <= mrl:
+        ui_status = "SAFE"
+        risk_level = "low"
+        phi_remaining = 0
+        explanation = "The recommended waiting period has been satisfied and no known rule conflict is detected."
+    else:
+        ui_status = "WAIT"
+        risk_level = "high" if adjusted_residue > mrl * 2 else "moderate"
+        explanation = "Your spray was applied recently and the estimated residue is above the safe limit."
+        
+        # Calculate PHI remaining
+        from mrl.mrl_lookup import find_mrl
+        mrl_data = find_mrl(req.crop, req.pesticide)
+        dt50 = mrl_data["half_life_days"]
+        k = math.log(2) / dt50
+        safe_days = math.log(adjusted_residue / mrl) / k
+        phi_remaining = math.ceil(safe_days)
+
+    current_date = datetime.now()
+    safe_harvest_date = (current_date + timedelta(days=phi_remaining)).strftime("%d %b %Y")
+
+    response_data = {
+        "status": ui_status,
+        "risk_level": risk_level,
+        "estimated_residue_risk": round((adjusted_residue / mrl), 2) if mrl > 0 else 0.0,
+        "mrl_limit": mrl,
+        "safe_harvest_date": safe_harvest_date,
+        "phi_remaining_days": phi_remaining,
+        "confidence": 0.85,
+        "weather_adjustment": weather_note,
+        "explanation": explanation,
+        "crop": req.crop,
+        "pesticide": req.pesticide,
+        "spray_date": spray_date,
+        "created_at": current_date.isoformat(),
+        "mobile_number": req.mobile_number
+    }
+    
+    # Save to MongoDB
+    try:
+        if hasattr(app, "database"):
+            mrl_collection = app.database.get_collection("mrl_reports")
+            await mrl_collection.insert_one(response_data.copy())
+    except Exception as e:
+        print(f"Error saving to MongoDB: {e}")
+
+    return response_data
+
+@app.get("/reports/{mobile_number}")
+async def get_user_reports(mobile_number: str):
+    try:
+        if hasattr(app, "database"):
+            disease_col = app.database.get_collection("disease_reports")
+            mrl_col = app.database.get_collection("mrl_reports")
+            
+            # Fetch disease reports
+            disease_cursor = disease_col.find({"mobile_number": mobile_number})
+            disease_reports = await disease_cursor.to_list(length=100)
+            
+            for rep in disease_reports:
+                rep.pop("_id", None)
+                rep["type"] = "disease"
+                
+            # Fetch MRL reports
+            mrl_cursor = mrl_col.find({"mobile_number": mobile_number})
+            mrl_reports = await mrl_cursor.to_list(length=100)
+            
+            for rep in mrl_reports:
+                rep.pop("_id", None)
+                rep["type"] = "mrl"
+                
+            all_reports = disease_reports + mrl_reports
+            # Sort by created_at descending
+            all_reports.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+            
+            return {"status": "success", "reports": all_reports}
+        else:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "DB not connected"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+
+class MRLCheckRequest(BaseModel):
+    crop: str
+    pesticide: str
+    predicted_residue: float
+
+if __name__ == "__main__":
+    import uvicorn
+    # This tells PyCharm to actually start the web server on port 8000
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
+
+# @app.post("/mrl-check")
+# def mrl_check(request: MRLCheckRequest):
+#     result = assess_crop_safety(
+#         crop=request.crop,
+#         pesticide=request.pesticide,
+#         predicted_residue=request.predicted_residue
+#     )
+#     return JSONResponse(result)
