@@ -1,0 +1,7 @@
+dataset,images,real_or_augmented,environment,status
+PlantVillage,54306,mostly_real,lab,planned
+PlantDoc,2598,real,in_the_wild,planned
+PlantifyDr,125000,mixed_with_augmentation,mixed,planned
+Plant Pathology 2020,3642,real,field,planned
+Cassava,21367,real,field,planned
+SAGE,820502,real,mixed,planned

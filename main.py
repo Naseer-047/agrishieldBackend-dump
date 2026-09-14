@@ -8,7 +8,7 @@ from database import create_tables, log_diagnosis,log_mrl
 from mrl_engine import calculate_residue, calculate_safe_harvest_time
 
 from diagnose import predict, generate_heatmap
-
+from drone.drone_analyze import analyze_drone_image
 app = FastAPI(title="Plant Disease Diagnose")
 create_tables()
 
@@ -91,3 +91,13 @@ async def mrl_check(
         "estimated_safe_harvest_days": round(safe_harvest_days, 2),
         "estimated_note": "Based on published degradation data; not a certified laboratory measurement."
     }
+@app.post("/drone-analyze")
+async def drone_analyze(file: UploadFile = File(...)):
+
+    contents = await file.read()
+
+    image = Image.open(io.BytesIO(contents)).convert("RGB")
+
+    result = analyze_drone_image(image)
+
+    return result
