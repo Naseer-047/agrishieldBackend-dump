@@ -1,6 +1,9 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
+from datetime import datetime, timedelta
+from fastapi.responses import JSONResponse, HTMLResponse
+from pydantic import BaseModel
 from PIL import Image
 import io
 
@@ -9,6 +12,8 @@ from diagnose import predict, generate_heatmap
 
 app = FastAPI(title="AgriShield Backend")
 from fastapi.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+import os
 
 # Add this block to allow frontend connections
 app.add_middleware(
@@ -19,6 +24,50 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
+# --- MongoDB Integration ---
+# Provide default connection string if not found in env
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://g486822_db_user:Naseer@cluster0.x8v75pd.mongodb.net/")
+
+@app.on_event("startup")
+async def startup_db_client():
+    print(f"Connecting to MongoDB...")
+    app.mongodb_client = AsyncIOMotorClient(MONGO_URI)
+    app.database = app.mongodb_client.get_database("agrishield_db")
+    print("Connected to MongoDB!")
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    app.mongodb_client.close()
+    print("Closed MongoDB connection.")
+
+# --- Onboarding Endpoint ---
+from typing import Optional
+
+class UserRegistration(BaseModel):
+    language: str
+    name: str
+    mobile_number: Optional[str] = None
+    password: Optional[str] = None
+    farm_location: str
+    farm_size_acres: float
+    crop: str
+
+@app.post("/users/onboard")
+async def register_user(req: UserRegistration):
+    try:
+        if hasattr(app, "database"):
+            users_collection = app.database.get_collection("users")
+            user_doc = req.dict()
+            user_doc["created_at"] = datetime.now().isoformat()
+            
+            # Simple password storing for hackathon prototype (In real app, MUST hash password)
+            await users_collection.insert_one(user_doc)
+            return {"status": "success", "message": "User registered successfully"}
+        else:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "DB not connected"})
+    except Exception as e:
+        print(f"Error saving user to MongoDB: {e}")
+        return JSONResponse(status_code=500, content={"status": "error", "message": "Unable to register user"})
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -58,9 +107,11 @@ class MRLRequest(BaseModel):
 #     return result
 
 import google.generativeai as genai
+import os
 
-GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE"
-genai.configure(api_key=GEMINI_API_KEY)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 vision_model = genai.GenerativeModel('gemini-flash-latest')
 
 @app.post("/diagnose")
@@ -92,15 +143,27 @@ async def diagnose(file: UploadFile = File(...)):
     label, confidence, class_idx = predict(image)
     heatmap_b64 = generate_heatmap(image, class_idx)
 
-    return JSONResponse({
+    response_data = {
         "disease": label.replace("___", " - ").replace("_", " "),
         "confidence_percent": round(confidence * 100, 2),
         "heatmap_base64": heatmap_b64
-    })
+    }
+
+    # Save to MongoDB
+    try:
+        if hasattr(app, "database"):
+            disease_collection = app.database.get_collection("disease_reports")
+            # Don't save the huge heatmap to the DB for space reasons
+            db_record = response_data.copy()
+            db_record["heatmap_base64"] = None
+            db_record["created_at"] = datetime.now().isoformat()
+            await disease_collection.insert_one(db_record)
+    except Exception as e:
+        print(f"Error saving to MongoDB: {e}")
+
+    return JSONResponse(response_data)
 
 from pydantic import BaseModel
-from datetime import datetime, timedelta
-
 class MRLRequest(BaseModel):
     crop: str
     pesticide: str
@@ -110,37 +173,23 @@ class MRLRequest(BaseModel):
     destination: str = "Domestic"
     crop_stage: str = "pre_harvest"
 
+from mrl.mrl_assessment import assess_crop_safety
+import math
+
 @app.post("/mrl-risk")
 async def check_mrl_risk(req: MRLRequest):
-    # Mock deterministic logic for the prototype
-    
-    # 1. Parse dates
+    # 1. Parse dates to YYYY-MM-DD
     try:
-        spray_date = datetime.strptime(req.spray_date, "%d %b %Y")
+        spray_date = datetime.strptime(req.spray_date, "%d %b %Y").strftime("%Y-%m-%d")
     except ValueError:
         try:
-            spray_date = datetime.strptime(req.spray_date, "%Y-%m-%d")
+            spray_date = datetime.strptime(req.spray_date, "%Y-%m-%d").strftime("%Y-%m-%d")
         except ValueError:
-            spray_date = datetime.now() # Fallback
+            spray_date = datetime.now().strftime("%Y-%m-%d") # Fallback
 
-    current_date = datetime.now()
-    days_since_spray = (current_date - spray_date).days
-
-    # 2. Mock PHI rules based on pesticide
-    pesticide_lower = req.pesticide.lower()
-    phi = 5 # Default 5 days
-    mrl_limit = 3.0
+    # 2. Assume a default initial residue since farmer shouldn't enter this
+    default_initial_residue = 2.0 
     
-    if "lambda" in pesticide_lower:
-        phi = 7
-        mrl_limit = 1.0
-    elif "copper" in pesticide_lower:
-        phi = 3
-        mrl_limit = 5.0
-    elif "imidacloprid" in pesticide_lower:
-        phi = 14
-        mrl_limit = 0.5
-        
     # Check if unknown pesticide
     if req.pesticide == "Unknown" or not req.pesticide:
         return {
@@ -154,33 +203,84 @@ async def check_mrl_risk(req: MRLRequest):
             "explanation": "AgriShield could not verify the required pesticide/MRL information."
         }
 
-    # 3. Calculate Result
-    if days_since_spray < 0:
-        days_since_spray = 0 # Prevent negative if spray date is future
+    # 3. Call Pavan's real logic
+    assessment = assess_crop_safety(
+        crop=req.crop,
+        pesticide=req.pesticide,
+        initial_residue=default_initial_residue,
+        spray_date=spray_date
+    )
 
-    if days_since_spray >= phi:
-        status = "SAFE"
+    # Handle errors/unknowns from Pavan's logic
+    if assessment.get("status") in ["UNKNOWN", "ERROR"]:
+        return {
+            "status": "HOLD",
+            "risk_level": "unknown",
+            "estimated_residue_risk": 0.0,
+            "mrl_limit": 0.0,
+            "safe_harvest_date": "Unknown",
+            "phi_remaining_days": 0,
+            "confidence": 0.0,
+            "explanation": assessment.get("message", "AgriShield could not verify the required pesticide/MRL information.")
+        }
+
+    # 4. Map Pavan's statuses to our UI statuses
+    pavan_status = assessment["status"]
+    
+    if pavan_status == "SAFE":
+        ui_status = "SAFE"
         risk_level = "low"
         phi_remaining = 0
-        safe_harvest_date = current_date.strftime("%d %b %Y")
         explanation = "The recommended waiting period has been satisfied and no known rule conflict is detected."
     else:
-        status = "WAIT"
-        risk_level = "moderate"
-        phi_remaining = phi - days_since_spray
-        safe_harvest_date = (current_date + timedelta(days=phi_remaining)).strftime("%d %b %Y")
-        explanation = "Your spray was applied recently and the recommended waiting period is still active."
+        # WARNING, NEAR_LIMIT, DANGER -> WAIT
+        ui_status = "WAIT"
+        risk_level = "moderate" if pavan_status in ["WARNING", "NEAR_LIMIT"] else "high"
+        explanation = "Your spray was applied recently and the estimated residue is above the safe limit."
 
-    return {
-        "status": status,
+        # Calculate PHI remaining based on half life
+        # Using Pavan's mrl_data logic
+        from mrl.mrl_lookup import find_mrl
+        mrl_data = find_mrl(req.crop, req.pesticide)
+        dt50 = mrl_data["half_life_days"]
+        current_residue = assessment["predicted_residue_mg_per_kg"]
+        mrl = mrl_data["mrl_mg_per_kg"]
+        
+        if current_residue <= mrl:
+            phi_remaining = 0
+            ui_status = "SAFE"
+        else:
+            k = math.log(2) / dt50
+            safe_days = math.log(current_residue / mrl) / k
+            phi_remaining = math.ceil(safe_days)
+
+    current_date = datetime.now()
+    safe_harvest_date = (current_date + timedelta(days=phi_remaining)).strftime("%d %b %Y")
+
+    response_data = {
+        "status": ui_status,
         "risk_level": risk_level,
-        "estimated_residue_risk": 0.62 if status == "WAIT" else 0.15,
-        "mrl_limit": mrl_limit,
+        "estimated_residue_risk": assessment["percentage_of_mrl"] / 100.0,
+        "mrl_limit": assessment["mrl_mg_per_kg"],
         "safe_harvest_date": safe_harvest_date,
         "phi_remaining_days": phi_remaining,
         "confidence": 0.85,
-        "explanation": explanation
+        "explanation": explanation,
+        "crop": req.crop,
+        "pesticide": req.pesticide,
+        "spray_date": spray_date,
+        "created_at": current_date.isoformat()
     }
+    
+    # Save to MongoDB
+    try:
+        if hasattr(app, "database"):
+            mrl_collection = app.database.get_collection("mrl_reports")
+            await mrl_collection.insert_one(response_data.copy())
+    except Exception as e:
+        print(f"Error saving to MongoDB: {e}")
+
+    return response_data
 
 
 class MRLCheckRequest(BaseModel):
