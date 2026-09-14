@@ -59,7 +59,7 @@ async def register_user(req: UserRegistration):
             users_collection = app.database.get_collection("users")
             
             # Check if user already exists
-            existing_user = await users_collection.find_one({"mobile": req.mobile})
+            existing_user = await users_collection.find_one({"mobile_number": req.mobile_number})
             if existing_user:
                 return JSONResponse(status_code=400, content={"status": "error", "message": "User with this mobile number already exists."})
 
