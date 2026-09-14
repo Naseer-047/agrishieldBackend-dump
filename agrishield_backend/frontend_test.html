@@ -27,7 +27,53 @@
         </div>
     </div>
 
+    <div class="card">
+    <h2>2. Field Weather Conditions</h2>
+    <button onclick="fetchWeather()">Get My Location & Weather</button>
+    <div id="weatherResults" style="display: none; margin-top: 15px;">
+        <p>🌡️ Temp: <span id="temp"></span>°C</p>
+        <p>💧 Humidity: <span id="humidity"></span>%</p>
+        <p>🌧️ Rain: <span id="rain"></span> mm</p>
+    </div>
+    </div>
+
     <script>
+        function fetchWeather() {
+    if (!navigator.geolocation) {
+        alert("Geolocation is not supported by your browser");
+        return;
+    }
+
+    navigator.geolocation.getCurrentPosition(async (position) => {
+        const payload = {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude
+        };
+
+        try {
+            const response = await fetch('http://127.0.0.1:8000/weather', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await response.json();
+
+            if (data.status === "success") {
+                document.getElementById('temp').innerText = data.temperature_c;
+                document.getElementById('humidity').innerText = data.humidity_percent;
+                document.getElementById('rain').innerText = data.precipitation_mm;
+                document.getElementById('weatherResults').style.display = 'block';
+            } else {
+                alert("Error fetching weather: " + data.explanation);
+            }
+        } catch (error) {
+            console.error("Connection failed:", error);
+        }
+    }, (error) => {
+        alert("Please allow location access to get weather data.");
+    });
+}
         async function analyzeLeaf() {
             const fileInput = document.getElementById('leafImage');
             if (fileInput.files.length === 0) {
@@ -58,6 +104,7 @@
                 alert("Failed to connect to the backend. Is PyCharm running?");
             }
         }
+
     </script>
 </body>
 </html>
