@@ -46,11 +46,20 @@ from typing import Optional
 class UserRegistration(BaseModel):
     language: str
     name: str
-    mobile_number: Optional[str] = None
+    mobile_number: str
     password: Optional[str] = None
     farm_location: str
     farm_size_acres: float
     crop: str
+
+@app.get("/users/check")
+async def check_user_exists(mobile: str):
+    if hasattr(app, "database"):
+        users_collection = app.database.get_collection("users")
+        existing_user = await users_collection.find_one({"mobile_number": mobile})
+        if existing_user:
+            return {"exists": True}
+    return {"exists": False}
 
 @app.post("/users/onboard")
 async def register_user(req: UserRegistration):
