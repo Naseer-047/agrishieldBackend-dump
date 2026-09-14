@@ -67,19 +67,6 @@ def predict(image: Image.Image):
     )
 
 def generate_heatmap(image: Image.Image, predicted_class_idx: int):
-    input_tensor = transform(image.convert("RGB")).unsqueeze(0).to(device)
-    rgb_img = np.array(image.resize((224, 224)).convert("RGB")) / 255.0
-    
-    target_layers = [model.features[-2]]
-    cam = GradCAMPlusPlus(model=model, target_layers=target_layers)
-    targets = [ClassifierOutputTarget(predicted_class_idx)]
-    
-    grayscale_cam = cam(input_tensor=input_tensor, targets=targets)[0]
-    visualization = show_cam_on_image(rgb_img, grayscale_cam, use_rgb=True)
-    
-    vis_pil = Image.fromarray(visualization)
-    buffered = io.BytesIO()
-    vis_pil.save(buffered, format="JPEG")
-    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-    
-    return img_str
+    # Disable GradCAM heatmap generation to prevent 502 Bad Gateway (OOM) 
+    # on Render's 512MB RAM free tier. The frontend does not currently display it.
+    return None
