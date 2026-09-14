@@ -1,5 +1,4 @@
 
-aerial/
 .venv/
 __pycache__/
 *.db
