@@ -22,7 +22,14 @@ model.classifier[1] = nn.Sequential(
     nn.Dropout(0.2),
     nn.Linear(model.classifier[1].in_features, 38)
 )
-model.load_state_dict(torch.load("model/mobilenetv2_plant.pth", map_location=device, weights_only=False))
+model_path = "model/mobilenetv2_plant.pth"
+if os.path.exists(model_path) and os.path.getsize(model_path) < 1000:
+    import urllib.request
+    print("Detected Git LFS pointer. Downloading real model weights from Hugging Face...")
+    url = "https://huggingface.co/Daksh159/plant-disease-mobilenetv2/resolve/main/mobilenetv2_plant.pth"
+    urllib.request.urlretrieve(url, model_path)
+
+model.load_state_dict(torch.load(model_path, map_location=device, weights_only=False))
 model = model.to(device)
 model.eval()
 
