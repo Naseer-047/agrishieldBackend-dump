@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgriShield Farmer Portal</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; }
+        .card { border: 1px solid #ddd; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+        img { max-width: 100%; border-radius: 4px; margin-top: 10px; }
+        button { background: #16a34a; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+    <h1>🌱 AgriShield Farmer Portal</h1>
+
+    <div class="card">
+        <h2>1. Disease Diagnosis</h2>
+        <input type="file" id="leafImage" accept="image/*">
+        <button onclick="analyzeLeaf()">Analyze Crop</button>
+
+        <div id="results" style="display: none; margin-top: 20px;">
+            <h3>Result: <span id="diseaseName"></span> (<span id="confidence"></span>%)</h3>
+            <p>Grad-CAM Heatmap:</p>
+            <img id="heatmapImage" alt="Disease Heatmap">
+        </div>
+    </div>
+
+    <script>
+        async function analyzeLeaf() {
+            const fileInput = document.getElementById('leafImage');
+            if (fileInput.files.length === 0) {
+                alert('Please select an image first.');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            try {
+                // Pointing to your PyCharm FastAPI server
+                const response = await fetch('http://127.0.0.1:8000/diagnose', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                // Inject results into the HTML
+                document.getElementById('diseaseName').innerText = data.disease;
+                document.getElementById('confidence').innerText = data.confidence_percent;
+                document.getElementById('heatmapImage').src = "data:image/jpeg;base64," + data.heatmap_base64;
+
+                document.getElementById('results').style.display = 'block';
+            } catch (error) {
+                console.error("Error:", error);
+                alert("Failed to connect to the backend. Is PyCharm running?");
+            }
+        }
+    </script>
+</body>
+</html>
