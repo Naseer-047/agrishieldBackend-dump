@@ -179,12 +179,13 @@ async def diagnose(file: UploadFile = File(...)):
         pass
 
     # 2. Run actual ML Model
-    label, confidence, class_idx = predict(image)
+    label, confidence, class_idx, top_predictions = predict(image)
     heatmap_b64 = generate_heatmap(image, class_idx)
 
     response_data = {
         "disease": label.replace("___", " - ").replace("_", " "),
         "confidence_percent": round(confidence * 100, 2),
+        "top_predictions": top_predictions,
         "heatmap_base64": heatmap_b64
     }
 
@@ -201,6 +202,15 @@ async def diagnose(file: UploadFile = File(...)):
         print(f"Error saving to MongoDB: {e}")
 
     return JSONResponse(response_data)
+
+from drone.drone_analyze import analyze_drone_image
+
+@app.post("/drone-analyze")
+async def drone_analyze(file: UploadFile = File(...)):
+    contents = await file.read()
+    image = Image.open(io.BytesIO(contents)).convert("RGB")
+    result = analyze_drone_image(image)
+    return result
 
 from pydantic import BaseModel
 class MRLRequest(BaseModel):
