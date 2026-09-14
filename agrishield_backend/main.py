@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 from datetime import datetime, timedelta
@@ -108,6 +108,52 @@ async def register_user(req: UserRegistration):
         print(f"Error saving user to MongoDB: {e}")
         return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
+@app.get("/users/{mobile_number}")
+async def get_user(mobile_number: str):
+    try:
+        if hasattr(app, "database"):
+            users_collection = app.database.get_collection("users")
+            user = await users_collection.find_one({"mobile_number": mobile_number})
+            if not user:
+                return JSONResponse(status_code=404, content={"status": "error", "message": "User not found."})
+            
+            user.pop("_id", None)
+            return {"status": "success", "user": user}
+        else:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "DB not connected"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+
+class UserUpdate(BaseModel):
+    mobile_number: str
+    name: Optional[str] = None
+    language: Optional[str] = None
+    about: Optional[str] = None
+    email: Optional[str] = None
+
+@app.put("/users/update")
+async def update_user(req: UserUpdate):
+    try:
+        if hasattr(app, "database"):
+            users_collection = app.database.get_collection("users")
+            user = await users_collection.find_one({"mobile_number": req.mobile_number})
+            if not user:
+                return JSONResponse(status_code=404, content={"status": "error", "message": "User not found."})
+            
+            update_data = {k: v for k, v in req.dict().items() if v is not None and k != "mobile_number"}
+            
+            if update_data:
+                await users_collection.update_one(
+                    {"mobile_number": req.mobile_number},
+                    {"$set": update_data}
+                )
+            
+            return {"status": "success", "message": "Profile updated successfully"}
+        else:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "DB not connected"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
@@ -135,6 +181,7 @@ class MRLRequest(BaseModel):
     destination: Optional[str] = "Domestic"
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    mobile_number: Optional[str] = None
 
 import google.generativeai as genai
 import os
@@ -145,7 +192,7 @@ if GEMINI_API_KEY:
 vision_model = genai.GenerativeModel('gemini-1.5-flash')
 
 @app.post("/diagnose")
-async def diagnose(file: UploadFile = File(...)):
+async def diagnose(file: UploadFile = File(...), mobile_number: str = Form(None)):
     contents = await file.read()
     image = Image.open(io.BytesIO(contents)).convert("RGB")
 
@@ -188,6 +235,8 @@ async def diagnose(file: UploadFile = File(...)):
             db_record = response_data.copy()
             db_record["heatmap_base64"] = None
             db_record["created_at"] = datetime.now().isoformat()
+            if mobile_number:
+                db_record["mobile_number"] = mobile_number
             await disease_collection.insert_one(db_record)
     except Exception as e:
         print(f"Error saving to MongoDB: {e}")
@@ -320,7 +369,8 @@ async def check_mrl_risk(req: MRLRequest):
         "crop": req.crop,
         "pesticide": req.pesticide,
         "spray_date": spray_date,
-        "created_at": current_date.isoformat()
+        "created_at": current_date.isoformat(),
+        "mobile_number": req.mobile_number
     }
     
     # Save to MongoDB
@@ -332,6 +382,40 @@ async def check_mrl_risk(req: MRLRequest):
         print(f"Error saving to MongoDB: {e}")
 
     return response_data
+
+@app.get("/reports/{mobile_number}")
+async def get_user_reports(mobile_number: str):
+    try:
+        if hasattr(app, "database"):
+            disease_col = app.database.get_collection("disease_reports")
+            mrl_col = app.database.get_collection("mrl_reports")
+            
+            # Fetch disease reports
+            disease_cursor = disease_col.find({"mobile_number": mobile_number})
+            disease_reports = await disease_cursor.to_list(length=100)
+            
+            for rep in disease_reports:
+                rep.pop("_id", None)
+                rep["type"] = "disease"
+                
+            # Fetch MRL reports
+            mrl_cursor = mrl_col.find({"mobile_number": mobile_number})
+            mrl_reports = await mrl_cursor.to_list(length=100)
+            
+            for rep in mrl_reports:
+                rep.pop("_id", None)
+                rep["type"] = "mrl"
+                
+            all_reports = disease_reports + mrl_reports
+            # Sort by created_at descending
+            all_reports.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+            
+            return {"status": "success", "reports": all_reports}
+        else:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "DB not connected"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+
 class MRLCheckRequest(BaseModel):
     crop: str
     pesticide: str
