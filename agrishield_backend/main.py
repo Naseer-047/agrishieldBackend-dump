@@ -61,6 +61,30 @@ async def check_user_exists(mobile: str):
             return {"exists": True}
     return {"exists": False}
 
+class UserLogin(BaseModel):
+    mobile_number: str
+    password: str
+
+@app.post("/users/login")
+async def login_user(req: UserLogin):
+    try:
+        if hasattr(app, "database"):
+            users_collection = app.database.get_collection("users")
+            user = await users_collection.find_one({"mobile_number": req.mobile_number})
+            if not user:
+                return JSONResponse(status_code=404, content={"status": "error", "message": "Account not found."})
+            
+            if user.get("password") != req.password:
+                return JSONResponse(status_code=401, content={"status": "error", "message": "Incorrect password."})
+            
+            # Remove MongoDB _id before returning
+            user.pop("_id", None)
+            return {"status": "success", "message": "Login successful", "user": user}
+        else:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "DB not connected"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+
 @app.post("/users/onboard")
 async def register_user(req: UserRegistration):
     try:
