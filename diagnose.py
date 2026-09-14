@@ -36,13 +36,27 @@ transform = transforms.Compose([
 
 def predict(image: Image.Image):
     img_tensor = transform(image.convert("RGB")).unsqueeze(0).to(device)
-    
+
     with torch.no_grad():
         outputs = model(img_tensor)
         probs = torch.softmax(outputs, dim=1)[0]
-        confidence, idx = torch.max(probs, 0)
-    
-    return CLASS_NAMES[idx.item()], float(confidence), idx.item()
+
+    top_probs, top_indices = torch.topk(probs, 5)
+
+    top_predictions = []
+
+    for prob, idx in zip(top_probs, top_indices):
+        top_predictions.append({
+            "disease": CLASS_NAMES[idx.item()],
+            "confidence_percent": round(float(prob) * 100, 2)
+        })
+
+    return (
+        CLASS_NAMES[top_indices[0].item()],
+        float(top_probs[0]),
+        top_indices[0].item(),
+        top_predictions
+    )
 
 def generate_heatmap(image: Image.Image, predicted_class_idx: int):
     input_tensor = transform(image.convert("RGB")).unsqueeze(0).to(device)
