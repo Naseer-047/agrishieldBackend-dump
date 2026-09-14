@@ -61,6 +61,30 @@ async def check_user_exists(mobile: str):
             return {"exists": True}
     return {"exists": False}
 
+class UserLogin(BaseModel):
+    mobile_number: str
+    password: str
+
+@app.post("/users/login")
+async def login_user(req: UserLogin):
+    try:
+        if hasattr(app, "database"):
+            users_collection = app.database.get_collection("users")
+            user = await users_collection.find_one({"mobile_number": req.mobile_number})
+            if not user:
+                return JSONResponse(status_code=404, content={"status": "error", "message": "Account not found."})
+            
+            if user.get("password") != req.password:
+                return JSONResponse(status_code=401, content={"status": "error", "message": "Incorrect password."})
+            
+            # Remove MongoDB _id before returning
+            user.pop("_id", None)
+            return {"status": "success", "message": "Login successful", "user": user}
+        else:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "DB not connected"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+
 @app.post("/users/onboard")
 async def register_user(req: UserRegistration):
     try:
@@ -106,26 +130,11 @@ def home():
 class MRLRequest(BaseModel):
     crop: str
     pesticide: str
-    initial_residue: float
+    initial_residue: float = 2.0
     spray_date: str
-<<<<<<< HEAD
     destination: Optional[str] = "Domestic"
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-=======
-    target_date: str = None  # Optional
->>>>>>> 10ab8c0400b6f9d24742a3690083357a6e44ebd5
-
-# @app.post("/mrl-check")
-# def mrl_check(req: MRLRequest):
-#     result = assess_crop_safety(
-#         crop=req.crop,
-#         pesticide=req.pesticide,
-#         initial_residue=req.initial_residue,
-#         spray_date=req.spray_date,
-#         target_date=req.target_date
-#     )
-#     return result
 
 import google.generativeai as genai
 import os
@@ -161,12 +170,13 @@ async def diagnose(file: UploadFile = File(...)):
         pass
 
     # 2. Run actual ML Model
-    label, confidence, class_idx = predict(image)
+    label, confidence, class_idx, top_predictions = predict(image)
     heatmap_b64 = generate_heatmap(image, class_idx)
 
     response_data = {
         "disease": label.replace("___", " - ").replace("_", " "),
         "confidence_percent": round(confidence * 100, 2),
+        "top_predictions": top_predictions,
         "heatmap_base64": heatmap_b64
     }
 
@@ -184,26 +194,20 @@ async def diagnose(file: UploadFile = File(...)):
 
     return JSONResponse(response_data)
 
-from pydantic import BaseModel
-class MRLRequest(BaseModel):
-    crop: str
-    pesticide: str
-    spray_date: str
-    application_rate: str = "label_default"
-    location: str = "Unknown"
-    destination: str = "Domestic"
-    crop_stage: str = "pre_harvest"
+from drone.drone_analyze import analyze_drone_image
+
+@app.post("/drone-analyze")
+async def drone_analyze(file: UploadFile = File(...)):
+    contents = await file.read()
+    image = Image.open(io.BytesIO(contents)).convert("RGB")
+    result = analyze_drone_image(image)
+    return result
 
 from mrl.mrl_assessment import assess_crop_safety
 import math
+import requests
 
 @app.post("/mrl-risk")
-<<<<<<< HEAD
-def mrl_risk(event: ApplicationEvent):
-    mrl_data = find_mrl(event.crop, event.pesticide)
-    if not mrl_data:
-        return {"status": "HOLD", "explanation": "Missing MRL data for this crop/pesticide."}
-=======
 async def check_mrl_risk(req: MRLRequest):
     # 1. Parse dates to YYYY-MM-DD
     try:
@@ -213,10 +217,14 @@ async def check_mrl_risk(req: MRLRequest):
             spray_date = datetime.strptime(req.spray_date, "%Y-%m-%d").strftime("%Y-%m-%d")
         except ValueError:
             spray_date = datetime.now().strftime("%Y-%m-%d") # Fallback
->>>>>>> 10ab8c0400b6f9d24742a3690083357a6e44ebd5
+
+    d_spray = datetime.strptime(spray_date, "%Y-%m-%d")
+    days_elapsed = (datetime.now() - d_spray).days
+    if days_elapsed < 0:
+        return {"status": "ERROR", "explanation": "Spray date cannot be in the future."}
 
     # 2. Assume a default initial residue since farmer shouldn't enter this
-    default_initial_residue = 2.0 
+    default_initial_residue = req.initial_residue
     
     # Check if unknown pesticide
     if req.pesticide == "Unknown" or not req.pesticide:
@@ -228,22 +236,38 @@ async def check_mrl_risk(req: MRLRequest):
             "safe_harvest_date": "Unknown",
             "phi_remaining_days": 0,
             "confidence": 0.0,
+            "weather_adjustment": "No pesticide provided.",
             "explanation": "AgriShield could not verify the required pesticide/MRL information."
         }
 
-<<<<<<< HEAD
-    d_spray = datetime.strptime(event.spray_date, "%Y-%m-%d")
-    days_elapsed = (datetime.now() - d_spray).days
-    if days_elapsed < 0:
-        return {"status": "ERROR", "explanation": "Spray date cannot be in the future."}
+    # 3. Call Pavan's real logic to get base assessment
+    assessment = assess_crop_safety(
+        crop=req.crop,
+        pesticide=req.pesticide,
+        initial_residue=default_initial_residue,
+        spray_date=spray_date
+    )
+
+    if assessment.get("status") in ["UNKNOWN", "ERROR"]:
+        return {
+            "status": "HOLD",
+            "risk_level": "unknown",
+            "estimated_residue_risk": 0.0,
+            "mrl_limit": 0.0,
+            "safe_harvest_date": "Unknown",
+            "phi_remaining_days": 0,
+            "confidence": 0.0,
+            "weather_adjustment": "Error in assessment.",
+            "explanation": assessment.get("message", "AgriShield could not verify the required pesticide/MRL information.")
+        }
 
     # Weather Integration: Rain Wash-off calculation
     weather_modifier = 1.0
     weather_note = "No location provided; using standard decay."
 
-    if event.latitude and event.longitude:
+    if req.latitude and req.longitude:
         try:
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={event.latitude}&longitude={event.longitude}&current=precipitation&timezone=auto"
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={req.latitude}&longitude={req.longitude}&current=precipitation&timezone=auto"
             resp = requests.get(url, timeout=3).json()
             rain_mm = resp.get("current", {}).get("precipitation", 0)
 
@@ -257,84 +281,28 @@ async def check_mrl_risk(req: MRLRequest):
         except Exception:
             weather_note = "Weather API timeout; using standard decay."
 
-    # Apply math with the new weather modifier
-    effective_c0 = c0 * weather_modifier
-    estimated_residue = calculate_residue(effective_c0, dt50, days_elapsed)
-    safe_harvest_days = calculate_safe_harvest_time(effective_c0, dt50, mrl_limit)
-
-    safe = estimated_residue <= mrl_limit
-    status = "SAFE" if safe else "WAIT"
-
-    timestamp = datetime.now().isoformat()
-    log_mrl(
-        event.pesticide,
-        event.spray_date,
-        datetime.now().strftime("%Y-%m-%d"),
-        estimated_residue,
-        safe,
-        timestamp
-    )
-
-    return {
-        "status": status,
-        "estimated_residue_mg_kg": round(estimated_residue, 3),
-        "mrl_limit": mrl_limit,
-        "days_after_application": days_elapsed,
-        "safe_harvest_countdown_days": max(0, round(safe_harvest_days - days_elapsed, 1)),
-        "weather_adjustment": weather_note,
-        "explanation": "Based on published degradation data; not a certified laboratory measurement."
-    }
-=======
-    # 3. Call Pavan's real logic
-    assessment = assess_crop_safety(
-        crop=req.crop,
-        pesticide=req.pesticide,
-        initial_residue=default_initial_residue,
-        spray_date=spray_date
-    )
-
-    # Handle errors/unknowns from Pavan's logic
-    if assessment.get("status") in ["UNKNOWN", "ERROR"]:
-        return {
-            "status": "HOLD",
-            "risk_level": "unknown",
-            "estimated_residue_risk": 0.0,
-            "mrl_limit": 0.0,
-            "safe_harvest_date": "Unknown",
-            "phi_remaining_days": 0,
-            "confidence": 0.0,
-            "explanation": assessment.get("message", "AgriShield could not verify the required pesticide/MRL information.")
-        }
-
-    # 4. Map Pavan's statuses to our UI statuses
-    pavan_status = assessment["status"]
+    # Adjust predicted residue based on weather
+    adjusted_residue = assessment["predicted_residue_mg_per_kg"] * weather_modifier
+    mrl = assessment["mrl_mg_per_kg"]
     
-    if pavan_status == "SAFE":
+    # 4. Map statuses to UI
+    if adjusted_residue <= mrl:
         ui_status = "SAFE"
         risk_level = "low"
         phi_remaining = 0
         explanation = "The recommended waiting period has been satisfied and no known rule conflict is detected."
     else:
-        # WARNING, NEAR_LIMIT, DANGER -> WAIT
         ui_status = "WAIT"
-        risk_level = "moderate" if pavan_status in ["WARNING", "NEAR_LIMIT"] else "high"
+        risk_level = "high" if adjusted_residue > mrl * 2 else "moderate"
         explanation = "Your spray was applied recently and the estimated residue is above the safe limit."
-
-        # Calculate PHI remaining based on half life
-        # Using Pavan's mrl_data logic
+        
+        # Calculate PHI remaining
         from mrl.mrl_lookup import find_mrl
         mrl_data = find_mrl(req.crop, req.pesticide)
         dt50 = mrl_data["half_life_days"]
-        current_residue = assessment["predicted_residue_mg_per_kg"]
-        mrl = mrl_data["mrl_mg_per_kg"]
-        
-        if current_residue <= mrl:
-            phi_remaining = 0
-            ui_status = "SAFE"
-        else:
-            k = math.log(2) / dt50
-            safe_days = math.log(current_residue / mrl) / k
-            phi_remaining = math.ceil(safe_days)
+        k = math.log(2) / dt50
+        safe_days = math.log(adjusted_residue / mrl) / k
+        phi_remaining = math.ceil(safe_days)
 
     current_date = datetime.now()
     safe_harvest_date = (current_date + timedelta(days=phi_remaining)).strftime("%d %b %Y")
@@ -342,11 +310,12 @@ async def check_mrl_risk(req: MRLRequest):
     response_data = {
         "status": ui_status,
         "risk_level": risk_level,
-        "estimated_residue_risk": assessment["percentage_of_mrl"] / 100.0,
-        "mrl_limit": assessment["mrl_mg_per_kg"],
+        "estimated_residue_risk": round((adjusted_residue / mrl), 2) if mrl > 0 else 0.0,
+        "mrl_limit": mrl,
         "safe_harvest_date": safe_harvest_date,
         "phi_remaining_days": phi_remaining,
         "confidence": 0.85,
+        "weather_adjustment": weather_note,
         "explanation": explanation,
         "crop": req.crop,
         "pesticide": req.pesticide,
@@ -363,9 +332,6 @@ async def check_mrl_risk(req: MRLRequest):
         print(f"Error saving to MongoDB: {e}")
 
     return response_data
-
-
->>>>>>> 10ab8c0400b6f9d24742a3690083357a6e44ebd5
 class MRLCheckRequest(BaseModel):
     crop: str
     pesticide: str
