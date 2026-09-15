@@ -185,47 +185,105 @@ class MRLRequest(BaseModel):
 
 import google.generativeai as genai
 import os
+import tempfile
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 vision_model = genai.GenerativeModel('gemini-1.5-flash')
 
+@app.post("/voice-assistant")
+async def voice_assistant(file: UploadFile = File(...), language: str = Form("English")):
+    if not GEMINI_API_KEY:
+         return JSONResponse(status_code=500, content={"status": "error", "message": "GEMINI_API_KEY is not configured on the server."})
+
+    try:
+        ext = file.filename.split('.')[-1] if file.filename and '.' in file.filename else 'm4a'
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
+
+        audio_file = genai.upload_file(path=tmp_path)
+        
+        prompt = f"You are a helpful and simple agricultural expert. Listen to the farmer's question in the audio and answer it concisely and simply in {language}."
+        response = vision_model.generate_content([prompt, audio_file])
+        
+        os.unlink(tmp_path)
+        try:
+            genai.delete_file(audio_file.name)
+        except Exception:
+            pass
+
+        return {"status": "success", "text": response.text.strip()}
+    except Exception as e:
+        print("Voice Assistant Error:", e)
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+
 @app.post("/diagnose")
 async def diagnose(file: UploadFile = File(...), mobile_number: str = Form(None)):
     contents = await file.read()
     image = Image.open(io.BytesIO(contents)).convert("RGB")
 
-    # 1. Verify with Gemini Vision
+    if not GEMINI_API_KEY:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "config_error", "message": "GEMINI_API_KEY is not configured on the server. Please add it to your environment variables."}
+        )
+
     try:
-        # Resize image for Gemini to make it extremely fast and prevent timeouts
+        # Resize image for Gemini to make it fast
         gemini_image = image.copy()
-        gemini_image.thumbnail((512, 512)) # Increase slightly to preserve details
-        prompt = "Is this an image of a plant, a leaf, a crop, or a farm? Answer ONLY with the word YES or NO."
-        response = vision_model.generate_content([prompt, gemini_image])
-        answer = response.text.strip().upper()
-        print(f"Gemini Answer: {answer}") # Debugging
+        gemini_image.thumbnail((512, 512))
         
-        # If it clearly says NO (and doesn't say YES)
-        if "NO" in answer and "YES" not in answer:
+        prompt = """
+        You are an expert agricultural plant pathologist. Analyze this leaf image and identify the crop and any disease present.
+        If it's healthy, indicate that.
+        Return your analysis STRICTLY as a raw JSON object with no markdown formatting or backticks. Example:
+        {
+          "is_plant": true,
+          "disease": "Potato - Early Blight",
+          "confidence_percent": 95,
+          "top_predictions": [
+            {"disease": "Potato - Early Blight", "confidence_percent": 95},
+            {"disease": "Potato - Late Blight", "confidence_percent": 5}
+          ]
+        }
+        If the image is not a plant, crop, or leaf, set "is_plant" to false. Do NOT wrap the output in ```json ... ``` blocks.
+        """
+        import json
+        response = vision_model.generate_content([prompt, gemini_image])
+        result_text = response.text.strip()
+        
+        if result_text.startswith("```json"):
+            result_text = result_text.replace("```json", "").replace("```", "").strip()
+        elif result_text.startswith("```"):
+            result_text = result_text.replace("```", "").strip()
+            
+        ai_data = json.loads(result_text)
+        
+        if not ai_data.get("is_plant", True):
             return JSONResponse(
                 status_code=400, 
                 content={"error": "not_a_leaf", "message": "Not a plant or leaf."}
             )
+            
+        response_data = {
+            "disease": ai_data.get("disease", "Unknown"),
+            "confidence_percent": ai_data.get("confidence_percent", 90),
+            "top_predictions": ai_data.get("top_predictions", []),
+            "heatmap_base64": None
+        }
+
     except Exception as e:
         print("Gemini Error:", e)
-        pass
-
-    # 2. Run actual ML Model
-    label, confidence, class_idx, top_predictions = predict(image)
-    heatmap_b64 = generate_heatmap(image, class_idx)
-
-    response_data = {
-        "disease": label.replace("___", " - ").replace("_", " "),
-        "confidence_percent": round(confidence * 100, 2),
-        "top_predictions": top_predictions,
-        "heatmap_base64": heatmap_b64
-    }
+        # 2. Fallback to local PyTorch Model if Gemini fails (e.g. Rate Limit)
+        label, confidence, class_idx, top_predictions = predict(image)
+        response_data = {
+            "disease": label.replace("___", " - ").replace("_", " "),
+            "confidence_percent": round(confidence * 100, 2),
+            "top_predictions": top_predictions,
+            "heatmap_base64": None
+        }
 
     # Save to MongoDB
     try:
