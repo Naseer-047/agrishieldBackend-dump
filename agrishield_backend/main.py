@@ -479,6 +479,79 @@ class MRLCheckRequest(BaseModel):
     pesticide: str
     predicted_residue: float
 
+# ──────────────────────────────────────────────────────────────────────────────
+# AI Voice & Text Assistant endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+import tempfile
+import google.generativeai as genai
+
+_GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+if _GEMINI_API_KEY:
+    genai.configure(api_key=_GEMINI_API_KEY)
+
+_LANG_PROMPTS = {
+    "Hindi": "तुम एक कृषि विशेषज्ञ हो। किसान की समस्या का सरल हिंदी में जवाब दो।",
+    "Kannada": "ನೀವು ಕೃಷಿ ತಜ್ಞ. ರೈತರ ಸಮಸ್ಯೆಗೆ ಸರಳ ಕನ್ನಡದಲ್ಲಿ ಉತ್ತರಿಸಿ.",
+    "English": "You are an expert agricultural advisor. Answer the farmer's question clearly in English.",
+}
+
+@app.post("/voice-assistant")
+async def voice_assistant(file: UploadFile = File(...), language: str = Form("English")):
+    """Receive an audio file, transcribe + answer using Gemini, return text."""
+    if not _GEMINI_API_KEY:
+        return JSONResponse({"status": "error", "message": "GEMINI_API_KEY not configured on server."}, status_code=500)
+    try:
+        audio_bytes = await file.read()
+        # Write to temp file so Gemini File API can upload it
+        suffix = ".m4a" if file.filename.endswith(".m4a") else ".wav"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+
+        system_prompt = _LANG_PROMPTS.get(language, _LANG_PROMPTS["English"])
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
+        # Upload audio and ask Gemini to both transcribe and answer
+        uploaded = genai.upload_file(path=tmp_path, mime_type="audio/wav")
+        result = model.generate_content([
+            system_prompt,
+            "Farmer's audio question:",
+            uploaded,
+            "Please transcribe what the farmer asked, then give a helpful answer.",
+        ])
+        os.unlink(tmp_path)
+        return JSONResponse({"status": "success", "text": result.text})
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
+class TextAssistantRequest(BaseModel):
+    question: str
+    language: str = "English"
+
+@app.post("/text-assistant")
+async def text_assistant(req: TextAssistantRequest):
+    """Answer a plain-text farming question using Gemini."""
+    if not _GEMINI_API_KEY:
+        return JSONResponse({"status": "error", "message": "GEMINI_API_KEY not configured on server."}, status_code=500)
+    try:
+        system_prompt = _LANG_PROMPTS.get(req.language, _LANG_PROMPTS["English"])
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        result = model.generate_content(f"{system_prompt}\n\nFarmer's question: {req.question}")
+        return JSONResponse({"status": "success", "text": result.text})
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/voice-assistant")
+async def voice_assistant_text_get(text: str = "", language: str = "English"):
+    """GET fallback – answer a plain text question (used when voice is unavailable)."""
+    if not text.strip():
+        return JSONResponse({"status": "error", "message": "No question provided."}, status_code=400)
+    req = TextAssistantRequest(question=text, language=language)
+    return await text_assistant(req)
+
+
 if __name__ == "__main__":
     import uvicorn
     # This tells PyCharm to actually start the web server on port 8000
